@@ -3091,6 +3091,7 @@ private fun LocalNavigationContent(
                         activeDownloadProgress = streamingBulkDownload
                             ?.takeIf { it.targetId == playlistId }
                             ?.let { it.finished to it.total },
+                        downloadedSongIds = streamingDownloadedSongIds,
                         currentSong = currentSong,
                         isPlaying = isPlaying,
                         onPlayPause = { viewModel.togglePlayPause() },
