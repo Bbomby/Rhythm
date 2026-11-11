@@ -44,6 +44,8 @@ import androidx.media3.datasource.cache.CacheDataSource
 import chromahub.rhythm.app.infrastructure.audio.RhythmBassBoostProcessor
 import chromahub.rhythm.app.infrastructure.audio.RhythmSpatializationProcessor
 import chromahub.rhythm.app.infrastructure.audio.RhythmMonoAudioProcessor
+import chromahub.rhythm.app.infrastructure.audio.visualizer.VisualizerAudioBus
+import chromahub.rhythm.app.infrastructure.audio.visualizer.VisualizerTapSink
 import chromahub.rhythm.app.shared.data.model.TransitionSettings
 import chromahub.rhythm.app.infrastructure.service.player.replaygain.ReplayGainAudioProcessor
 import chromahub.rhythm.app.infrastructure.service.player.replaygain.ReplayGainCache
@@ -112,6 +114,14 @@ class RhythmPlayerEngine(
     var isInternalVolumeAdjustment: Boolean = false
 
     private val onPlayerSwappedListeners = mutableListOf<(Player) -> Unit>()
+
+    // Each player's visualizer tap. Weak keys: a released, replaced player drops out by itself.
+    private val visualizerTaps = java.util.WeakHashMap<Player, VisualizerTapSink>()
+
+    /** Points the visualizer at the master player (playerA), which changes at every crossfade swap. */
+    private fun syncVisualizerTap() {
+        VisualizerAudioBus.setActiveTap(visualizerTaps[playerA])
+    }
 
     // Active Audio Session ID Flow — used for equalizer re-attachment
     private val _activeAudioSessionId = MutableStateFlow(0)
@@ -348,6 +358,7 @@ class RhythmPlayerEngine(
         activeReplayGainProcessor = aReplayGain
 
         _activeAudioSessionId.value = playerA.audioSessionId
+        syncVisualizerTap()
 
         isReleased = false
         Log.d(TAG, "RhythmPlayerEngine initialized. SessionA=${playerA.audioSessionId}, initialVolume=$initVolume, speed=$initSpeed, pitch=$initPitch")
@@ -414,6 +425,7 @@ class RhythmPlayerEngine(
         monoProcessor: RhythmMonoAudioProcessor? = null,
         replayGainProcessor: ReplayGainAudioProcessor? = null
     ): ExoPlayer {
+        var visualizerTap: VisualizerTapSink? = null
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(15_000, 30_000, 1_500, 2_500)
             .setBackBuffer(10_000, false)
@@ -510,7 +522,7 @@ class RhythmPlayerEngine(
                     .setAudioProcessorChain(processorChain)
                     .build()
 
-                return if (replayGainProcessor != null) {
+                val sink = if (replayGainProcessor != null) {
                     object : ForwardingAudioSink(baseSink) {
                         override fun configure(audioSinkConfig: AudioSink.AudioSinkConfig) {
                             replayGainProcessor.setRootFormat(audioSinkConfig.format)
@@ -520,6 +532,7 @@ class RhythmPlayerEngine(
                 } else {
                     baseSink
                 }
+                return VisualizerTapSink(sink).also { visualizerTap = it }
             }
         }.apply {
             val extensionMode = if (appSettings.decoderExtensionsEnabled.value) {
@@ -596,6 +609,9 @@ class RhythmPlayerEngine(
                     try { setPreferredAudioDevice(dev) } catch (e: Exception) { Log.w(TAG, "Failed to apply preferred device", e) }
                 }
             }
+
+        // ExoPlayer builds its renderers (and so the audio sink) inside build().
+        visualizerTap?.let { visualizerTaps[player] = it }
 
         if (replayGainProcessor != null) {
             player.addListener(object : Player.Listener {
@@ -834,6 +850,7 @@ class RhythmPlayerEngine(
         playerA = incomingPlayer
         playerB = outgoingPlayer
         activeReplayGainProcessor = incomingReplayGain
+        syncVisualizerTap()
 
         // Sync ReplayGain formats for the incoming player
         val mediaIdToSync = playerA.currentMediaItem?.mediaId ?: incomingMediaId
@@ -1094,6 +1111,7 @@ class RhythmPlayerEngine(
         scope.cancel()
         abandonAudioFocus()
         if (::playerA.isInitialized) {
+            VisualizerAudioBus.clearActiveTap(visualizerTaps[playerA])
             playerA.removeAnalyticsListener(analyticsListenerA)
             playerA.removeListener(masterPlayerListener)
             playerA.release()

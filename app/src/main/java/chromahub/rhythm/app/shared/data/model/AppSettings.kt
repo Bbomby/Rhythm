@@ -253,6 +253,9 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_PINNED_AUTOEQ_PROFILES = "pinned_autoeq_profiles"
         private const val KEY_CUSTOM_AUTOEQ_PROFILES = "custom_autoeq_profiles"
         private const val KEY_SPEAKER_AUTOEQ_BYPASS = "speaker_autoeq_bypass"
+        private const val KEY_VISUALIZER_BAND_PROFILE_ID = "visualizer_band_profile_id"
+        private const val KEY_VISUALIZER_AUTO_BAND_PROFILE = "visualizer_auto_band_profile"
+        private const val KEY_CUSTOM_VISUALIZER_BAND_PROFILES = "custom_visualizer_band_profiles"
         
         // Cache Settings
         private const val KEY_MAX_CACHE_SIZE = "max_cache_size"
@@ -1224,6 +1227,20 @@ class AppSettings private constructor(context: Context) {
         CustomEqualizerPreset.fromJson(prefs.getString(KEY_CUSTOM_EQUALIZER_PRESETS, null))
     )
     val customEqualizerPresets: StateFlow<List<CustomEqualizerPreset>> = _customEqualizerPresets.asStateFlow()
+
+    // Visualizer band profiles: the fixed choice, whether to pick by genre tag instead, and the user's own profiles.
+    private val _visualizerBandProfileId = MutableStateFlow(
+        prefs.getString(KEY_VISUALIZER_BAND_PROFILE_ID, null) ?: VisualizerBandProfile.BALANCED.id
+    )
+    val visualizerBandProfileId: StateFlow<String> = _visualizerBandProfileId.asStateFlow()
+
+    private val _visualizerAutoBandProfile = MutableStateFlow(prefs.getBoolean(KEY_VISUALIZER_AUTO_BAND_PROFILE, true))
+    val visualizerAutoBandProfile: StateFlow<Boolean> = _visualizerAutoBandProfile.asStateFlow()
+
+    private val _customVisualizerBandProfiles = MutableStateFlow(
+        VisualizerBandProfile.fromJson(prefs.getString(KEY_CUSTOM_VISUALIZER_BAND_PROFILES, null))
+    )
+    val customVisualizerBandProfiles: StateFlow<List<VisualizerBandProfile>> = _customVisualizerBandProfiles.asStateFlow()
 
     private val _equalizerPresetOrder = MutableStateFlow(
         prefs.getString(KEY_EQUALIZER_PRESET_ORDER, null)
@@ -3120,6 +3137,50 @@ private val _autoCheckForUpdates = MutableStateFlow(prefs.getBoolean(KEY_AUTO_CH
                 setEqualizerBandLevels(List(10) { 0f }.joinToString(","))
             }
         }
+    }
+
+    /** Built-in profiles followed by the user's own. */
+    fun allVisualizerBandProfiles(): List<VisualizerBandProfile> =
+        VisualizerBandProfile.BUILT_IN + _customVisualizerBandProfiles.value
+
+    /**
+     * The profile to use for a track: by genre tag when auto mode is on and the tag matches, otherwise the chosen
+     * profile, falling back to Balanced if that one was deleted.
+     */
+    fun resolveVisualizerBandProfile(genre: String?): VisualizerBandProfile {
+        if (_visualizerAutoBandProfile.value) {
+            VisualizerBandProfile.forGenre(genre)?.let { return it }
+        }
+        val id = _visualizerBandProfileId.value
+        return allVisualizerBandProfiles().firstOrNull { it.id == id } ?: VisualizerBandProfile.BALANCED
+    }
+
+    fun setVisualizerBandProfileId(id: String) {
+        prefs.edit { putString(KEY_VISUALIZER_BAND_PROFILE_ID, id) }
+        _visualizerBandProfileId.value = id
+    }
+
+    fun setVisualizerAutoBandProfile(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_VISUALIZER_AUTO_BAND_PROFILE, enabled) }
+        _visualizerAutoBandProfile.value = enabled
+    }
+
+    /** Adds or replaces (by id) a user profile. Built-ins can't be overwritten: save an edited copy instead. */
+    fun saveCustomVisualizerBandProfile(profile: VisualizerBandProfile) {
+        val clean = profile.sanitized().copy(builtIn = false)
+        if (VisualizerBandProfile.BUILT_IN.any { it.id == clean.id }) return
+        val current = _customVisualizerBandProfiles.value.toMutableList()
+        val index = current.indexOfFirst { it.id == clean.id }
+        if (index >= 0) current[index] = clean else current.add(clean)
+        prefs.edit { putString(KEY_CUSTOM_VISUALIZER_BAND_PROFILES, VisualizerBandProfile.toJson(current)) }
+        _customVisualizerBandProfiles.value = current
+    }
+
+    fun deleteCustomVisualizerBandProfile(id: String) {
+        val current = _customVisualizerBandProfiles.value.filterNot { it.id == id }
+        prefs.edit { putString(KEY_CUSTOM_VISUALIZER_BAND_PROFILES, VisualizerBandProfile.toJson(current)) }
+        _customVisualizerBandProfiles.value = current
+        if (_visualizerBandProfileId.value == id) setVisualizerBandProfileId(VisualizerBandProfile.BALANCED.id)
     }
 
     fun setEqualizerPresetOrder(order: List<String>) {
